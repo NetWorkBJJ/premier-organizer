@@ -1,0 +1,31 @@
+# Dependencies
+node_modules/
+
+# Build output
+build/
+dist/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Logs
+*.log
+npm-debug.log*
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# TypeScript
+*.tsbuildinfo
+
+# Debug
+debug/
+
+# Playwright MCP downloads
+.playwright-mcp/

@@ -1,0 +1,40 @@
+{
+  "id": "com.premierorganizer.plugin",
+  "name": "Premier Organizer",
+  "version": "1.0.0",
+  "main": "index.html",
+  "manifestVersion": 5,
+  "host": {
+    "app": "premierepro",
+    "minVersion": "25.1.0"
+  },
+  "requiredPermissions": {
+    "localFileSystem": "request",
+    "clipboard": "readAndWrite"
+  },
+  "entrypoints": [
+    {
+      "type": "panel",
+      "id": "mainPanel",
+      "label": {
+        "default": "Premier Organizer"
+      },
+      "minimumSize": {
+        "width": 300,
+        "height": 400
+      },
+      "maximumSize": {
+        "width": 800,
+        "height": 1200
+      },
+      "preferredDockedSize": {
+        "width": 350,
+        "height": 500
+      },
+      "preferredFloatingSize": {
+        "width": 400,
+        "height": 600
+      }
+    }
+  ]
+}
