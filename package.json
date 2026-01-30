@@ -7,7 +7,8 @@
     "build": "webpack --mode development",
     "build:prod": "webpack --mode production",
     "watch": "webpack --mode development --watch",
-    "clean": "rm -rf build/*"
+    "clean": "rimraf build/*",
+    "package": "node scripts/package-for-distribution.js"
   },
   "keywords": [
     "adobe",
@@ -21,6 +22,7 @@
   "license": "MIT",
   "devDependencies": {
     "@types/react": "^18.2.0",
+    "rimraf": "^5.0.0",
     "@types/react-dom": "^18.2.0",
     "copy-webpack-plugin": "^12.0.0",
     "css-loader": "^6.8.0",
