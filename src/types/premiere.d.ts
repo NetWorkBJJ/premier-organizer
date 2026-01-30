@@ -18,8 +18,12 @@ declare module 'premierepro' {
   }
 
   export namespace TickTime {
-    function fromSeconds(seconds: number): TickTime;
-    function fromTicks(ticks: string): TickTime;
+    /** Create TickTime from seconds - official Adobe UXP API method */
+    function createWithSeconds(seconds: number): TickTime;
+    /** Create TickTime from ticks string */
+    function createWithTicks(ticks: string): TickTime;
+    /** Constant representing zero time */
+    const TIME_ZERO: TickTime;
   }
 
   // ============================================
@@ -28,6 +32,14 @@ declare module 'premierepro' {
 
   export interface Action {
     execute(): Promise<void>;
+  }
+
+  /**
+   * CompoundAction for use within executeTransaction
+   * Allows multiple actions to be batched together
+   */
+  export interface CompoundAction {
+    addAction(action: Action): void;
   }
 
   // ============================================
@@ -75,10 +87,11 @@ declare module 'premierepro' {
 
   /**
    * Media object for clip items
+   * NOTE: Properties are getters that return Promises in the actual UXP API
    */
   export interface Media {
-    readonly start: TickTime;
-    readonly duration: TickTime;
+    readonly start: Promise<TickTime>;
+    readonly duration: Promise<TickTime>;
   }
 
   /**
@@ -140,11 +153,11 @@ declare module 'premierepro' {
     getOutPoint(): Promise<TickTime>;
     getMediaType(): Promise<string>;
 
-    // Actions for modification
-    createSetStartAction(time: TickTime): Promise<Action>;
-    createSetEndAction(time: TickTime): Promise<Action>;
-    createSetInPointAction(time: TickTime): Promise<Action>;
-    createSetOutPointAction(time: TickTime): Promise<Action>;
+    // Actions for modification (SYNCHRONOUS per official Adobe samples)
+    createSetStartAction(time: TickTime): Action;
+    createSetEndAction(time: TickTime): Action;
+    createSetInPointAction(time: TickTime): Action;
+    createSetOutPointAction(time: TickTime): Action;
 
     getProjectItem(): Promise<ProjectItem>;
   }
@@ -196,6 +209,24 @@ declare module 'premierepro' {
 
     save(): Promise<boolean>;
     saveAs(path: string): Promise<boolean>;
+
+    /**
+     * Gets locked access to the project for safe modifications
+     * Project state won't change during callback execution
+     * NOTE: Callback is SYNCHRONOUS per official Adobe samples
+     */
+    lockedAccess(callback: () => void): void;
+
+    /**
+     * Executes an undoable transaction with a compound action
+     * @param callback - Function receiving CompoundAction to add actions to
+     * @param undoString - Description for undo history
+     * NOTE: Callback is SYNCHRONOUS per official Adobe samples
+     */
+    executeTransaction(
+      callback: (compoundAction: CompoundAction) => void,
+      undoString?: string
+    ): boolean;
   }
 
   export namespace Project {
@@ -206,35 +237,85 @@ declare module 'premierepro' {
   // Sequence Editor
   // ============================================
 
-  export namespace SequenceEditor {
-    function createInsertProjectItemAction(
+  /**
+   * SequenceEditor instance returned by getEditor()
+   * Contains methods for creating timeline actions
+   * Based on official Adobe UXP samples:
+   * https://github.com/AdobeDocs/uxp-premiere-pro-samples/blob/main/sample-panels/premiere-api/html/src/sequenceEditor.ts
+   */
+  export interface SequenceEditorInstance {
+    /**
+     * Insert a project item into the timeline
+     * @param projectItem - The item to insert (ProjectItem, NOT ClipProjectItem)
+     * @param time - Insert position on timeline
+     * @param videoTrackIndex - Target video track (0-based)
+     * @param audioTrackIndex - Target audio track (0-based)
+     * @param limitShift - Whether to limit shifting of non-input tracks
+     */
+    createInsertProjectItemAction(
       projectItem: ProjectItem,
-      sequence: Sequence,
+      time: TickTime,
       videoTrackIndex: number,
       audioTrackIndex: number,
-      insertTime: TickTime
-    ): Promise<Action>;
+      limitShift: boolean
+    ): Action;
+
+    createOverwriteItemAction(
+      projectItem: ProjectItem,
+      time: TickTime,
+      videoTrackIndex: number,
+      audioTrackIndex: number
+    ): Action;
+
+    createRemoveItemsAction(
+      trackItems: TrackItem[]
+    ): Action;
+
+    createCloneTrackItemAction(
+      trackItem: TrackItem
+    ): Action;
+
+    createMoveItemsAction(
+      trackItems: TrackItem[],
+      timeDelta: TickTime
+    ): Action;
+  }
+
+  export namespace SequenceEditor {
+    /**
+     * Get the sequence editor for a specific sequence
+     * NOTE: This is SYNCHRONOUS per official Adobe samples
+     */
+    function getEditor(sequence: Sequence): SequenceEditorInstance;
+
+    // Static methods (for backwards compatibility)
+    function createInsertProjectItemAction(
+      projectItem: ProjectItem,
+      time: TickTime,
+      videoTrackIndex: number,
+      audioTrackIndex: number,
+      limitShift: boolean
+    ): Action;
 
     function createOverwriteItemAction(
       projectItem: ProjectItem,
-      sequence: Sequence,
+      time: TickTime,
       videoTrackIndex: number,
-      audioTrackIndex: number,
-      insertTime: TickTime
-    ): Promise<Action>;
+      audioTrackIndex: number
+    ): Action;
 
     function createRemoveItemsAction(
       trackItems: TrackItem[]
-    ): Promise<Action>;
+    ): Action;
 
     function createCloneTrackItemAction(
       trackItem: TrackItem
-    ): Promise<Action>;
+    ): Action;
 
     function createMoveItemsAction(
       trackItems: TrackItem[],
       timeDelta: TickTime
-    ): Promise<Action>;
+    ): Action;
   }
 
   // ============================================

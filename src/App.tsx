@@ -97,8 +97,8 @@ function App() {
     loadClips();
   }, [imageBin]);
 
-  // Generate preview
-  const handleGeneratePreview = useCallback(() => {
+  // Generate preview (now async to fetch media paths for thumbnails)
+  const handleGeneratePreview = useCallback(async () => {
     if (!videoBin && !imageBin) {
       setErrorMessage('Selecione pelo menos um bin');
       return;
@@ -109,8 +109,8 @@ function App() {
 
     try {
       const config: OrganizerConfig = {
-        videoItems: videoClips.map((c) => c.item),
-        imageItems: imageClips.map((c) => c.item),
+        videoItems: videoClips,   // Pass full ClipInfo[] for duration access
+        imageItems: imageClips,   // Pass full ClipInfo[] for duration access
         pattern,
         randomDuration: {
           enabled: randomDurationEnabled,
@@ -121,7 +121,7 @@ function App() {
         audioTrackIndex: 0,
       };
 
-      const previewResult = createOrganizePreview(config);
+      const previewResult = await createOrganizePreview(config);
       setPreview(previewResult);
       setErrorMessage(null);
     } catch (err) {
@@ -144,7 +144,12 @@ function App() {
 
   // Apply to timeline
   const handleApply = useCallback(async () => {
+    console.log('[handleApply] Starting...');
+    console.log('[handleApply] Preview:', preview);
+    console.log('[handleApply] Preview clips count:', preview?.clips?.length);
+
     if (!preview || preview.clips.length === 0) {
+      console.log('[handleApply] No preview or empty clips');
       setErrorMessage('Gere um preview primeiro');
       return;
     }
@@ -153,10 +158,12 @@ function App() {
     setResultMessage(null);
 
     try {
+      console.log('[handleApply] Calling applyToTimeline...');
       const result = await applyToTimeline(preview, {
         videoTrackIndex: 0,
         audioTrackIndex: 0,
       });
+      console.log('[handleApply] applyToTimeline result:', result);
 
       if (result.success) {
         setResultMessage(
@@ -174,6 +181,7 @@ function App() {
       setPreview(null);
       setStatus('ready');
     } catch (err) {
+      console.error('[handleApply] ERROR:', err);
       setStatus('ready');
       setErrorMessage(
         err instanceof Error ? err.message : 'Erro ao aplicar na timeline'
