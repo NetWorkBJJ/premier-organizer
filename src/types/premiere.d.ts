@@ -116,6 +116,22 @@ declare module 'premierepro' {
   }
 
   // ============================================
+  // Constants
+  // ============================================
+
+  export namespace Constants {
+    /**
+     * Track item type constants used by getTrackItems()
+     * @see https://developer.adobe.com/premiere-pro/uxp/ppro_reference/
+     */
+    export enum TrackItemType {
+      CLIP = 1,
+      TRANSITION = 2,
+      EMPTY = 3,
+    }
+  }
+
+  // ============================================
   // Tracks
   // ============================================
 
@@ -123,7 +139,15 @@ declare module 'premierepro' {
     readonly index: number;
     readonly name: string;
 
-    getTrackItems(): Promise<TrackItem[]>;
+    /**
+     * Gets track items from this video track
+     * @param trackItemType - Type of items to retrieve (Constants.TrackItemType.CLIP, etc.)
+     * @param includeEmptyTrackItems - Whether to include empty track items
+     */
+    getTrackItems(
+      trackItemType: Constants.TrackItemType | number,
+      includeEmptyTrackItems: boolean
+    ): Promise<TrackItem[]>;
     isMuted(): Promise<boolean>;
     isLocked(): Promise<boolean>;
   }
@@ -132,7 +156,15 @@ declare module 'premierepro' {
     readonly index: number;
     readonly name: string;
 
-    getTrackItems(): Promise<TrackItem[]>;
+    /**
+     * Gets track items from this audio track
+     * @param trackItemType - Type of items to retrieve (Constants.TrackItemType.CLIP, etc.)
+     * @param includeEmptyTrackItems - Whether to include empty track items
+     */
+    getTrackItems(
+      trackItemType: Constants.TrackItemType | number,
+      includeEmptyTrackItems: boolean
+    ): Promise<TrackItem[]>;
     isMuted(): Promise<boolean>;
     isLocked(): Promise<boolean>;
   }

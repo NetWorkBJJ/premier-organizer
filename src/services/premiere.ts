@@ -517,9 +517,13 @@ export async function getVideoTrack(
 
 /**
  * Gets all track items from a video track
+ * NOTE: UXP API requires trackItemType and includeEmptyTrackItems parameters
  */
 export async function getTrackItems(track: VideoTrack): Promise<TrackItem[]> {
-  return await track.getTrackItems();
+  return await track.getTrackItems(
+    ppro.Constants.TrackItemType.CLIP,
+    false // don't include empty track items
+  );
 }
 
 /**
@@ -530,7 +534,10 @@ export async function getTrackEndTime(track: VideoTrack): Promise<number> {
   console.log('[getTrackEndTime] Track type:', typeof track);
 
   try {
-    const items = await track.getTrackItems();
+    const items = await track.getTrackItems(
+      ppro.Constants.TrackItemType.CLIP,
+      false
+    );
     console.log('[getTrackEndTime] Items count:', items?.length);
 
     if (!items || items.length === 0) return 0;
@@ -593,7 +600,10 @@ export async function findClipAtTime(
   track: VideoTrack,
   timeSeconds: number
 ): Promise<TrackItem | null> {
-  const items = await track.getTrackItems();
+  const items = await track.getTrackItems(
+    ppro.Constants.TrackItemType.CLIP,
+    false
+  );
 
   for (const item of items) {
     const startTime = await item.getStartTime();
@@ -618,4 +628,511 @@ export async function isPremiereReady(): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+/**
+ * Result of a trim operation
+ */
+export interface TrimResult {
+  success: boolean;
+  trimmedCount: number;
+  errors: string[];
+}
+
+/**
+ * Clip info for trimming operation
+ */
+export interface TrimClipInfo {
+  plannedDuration: number | null;
+  originalDuration: number;
+  expectedStartTime: number;  // Time when this clip was inserted (for matching)
+}
+
+/**
+ * Trims clips after batch insertion to match planned durations
+ * Finds clips by their start time and applies out point trimming
+ *
+ * This enables the "random duration" feature by trimming each clip
+ * to its planned duration after insertion.
+ *
+ * IMPORTANT: Trims BOTH video AND audio tracks to keep them in sync.
+ * This allows Close Gap to work correctly with Linked Selection enabled.
+ *
+ * @param sequence - The sequence containing the clips
+ * @param videoTrackIndex - Which video track to look for clips
+ * @param audioTrackIndex - Which audio track to trim (linked clips)
+ * @param startingTime - The time where the first clip was inserted
+ * @param clips - Array of clip info with planned and original durations
+ */
+export async function trimClipsAfterInsert(
+  sequence: Sequence,
+  videoTrackIndex: number,
+  audioTrackIndex: number,
+  startingTime: number,
+  clips: TrimClipInfo[]
+): Promise<TrimResult> {
+  console.log('[TRIM] Starting trim operation...');
+  console.log(`[TRIM] Starting time: ${startingTime}s, Clips to process: ${clips.length}`);
+  console.log(`[TRIM] Video track: V${videoTrackIndex}, Audio track: A${audioTrackIndex}`);
+
+  const project = await getActiveProject();
+  if (!project) {
+    return { success: false, trimmedCount: 0, errors: ['No active project'] };
+  }
+
+  // Get the video track and all its items
+  const track = await getVideoTrack(sequence, videoTrackIndex);
+  const trackItems = await track.getTrackItems(
+    ppro.Constants.TrackItemType.CLIP,
+    false
+  );
+
+  console.log(`[TRIM] Found ${trackItems.length} track items on V${videoTrackIndex}`);
+
+  // Get the audio track and all its items (only if audioTrackIndex is valid)
+  // audioTrackIndex = -1 means no audio (e.g., images)
+  let audioTrackItems: TrackItem[] = [];
+  if (audioTrackIndex >= 0) {
+    const audioTrack = await sequence.getAudioTrack(audioTrackIndex);
+    audioTrackItems = await audioTrack.getTrackItems(
+      ppro.Constants.TrackItemType.CLIP,
+      false
+    );
+    console.log(`[TRIM] Found ${audioTrackItems.length} track items on A${audioTrackIndex}`);
+  } else {
+    console.log(`[TRIM] No audio track (audioTrackIndex=${audioTrackIndex})`);
+  }
+
+  // Build a map of start time → TrackItem for VIDEO
+  // We need to resolve all start times first (async)
+  const videoItemsByStartTime: Array<{ startTime: number; item: TrackItem }> = [];
+
+  for (const item of trackItems) {
+    const startTime = await item.getStartTime();
+    videoItemsByStartTime.push({
+      startTime: startTime.seconds,
+      item
+    });
+  }
+
+  // Sort by start time for easier debugging
+  videoItemsByStartTime.sort((a, b) => a.startTime - b.startTime);
+
+  // Build a map of start time → TrackItem for AUDIO
+  const audioItemsByStartTime: Array<{ startTime: number; item: TrackItem }> = [];
+
+  for (const item of audioTrackItems) {
+    const startTime = await item.getStartTime();
+    audioItemsByStartTime.push({
+      startTime: startTime.seconds,
+      item
+    });
+  }
+
+  // Sort by start time
+  audioItemsByStartTime.sort((a, b) => a.startTime - b.startTime);
+
+  console.log('[TRIM] Video track items by start time (first 5):');
+  videoItemsByStartTime.slice(0, 5).forEach((entry, i) => {
+    console.log(`  [${i}] ${entry.startTime.toFixed(2)}s`);
+  });
+
+  // Filter clips that are at or after startingTime (our inserted clips)
+  // Use small tolerance for floating point comparison
+  const videoClipsAfterStart = videoItemsByStartTime.filter(
+    (e) => e.startTime >= startingTime - 0.1
+  );
+
+  const audioClipsAfterStart = audioItemsByStartTime.filter(
+    (e) => e.startTime >= startingTime - 0.1
+  );
+
+  console.log(`[TRIM] Found ${videoClipsAfterStart.length} video clips after starting time ${startingTime}s`);
+  console.log(`[TRIM] Found ${audioClipsAfterStart.length} audio clips after starting time ${startingTime}s`);
+
+  // Build list of trim actions to apply
+  // Match clips by EXPECTED START TIME (not by index!)
+  // This ensures correct clip gets correct plannedDuration in two-track mode
+  const trimActions: Array<{
+    videoTrackItem: TrackItem;
+    audioTrackItem: TrackItem | null;
+    startTime: number;
+    plannedDuration: number;
+  }> = [];
+
+  const TOLERANCE = 0.5; // 0.5 second tolerance for floating point comparison
+
+  for (let i = 0; i < clips.length; i++) {
+    const clipInfo = clips[i];
+
+    // Skip if no planned duration (random duration disabled for this clip)
+    if (clipInfo.plannedDuration === null) {
+      continue;
+    }
+
+    // Find video clip by EXPECTED START TIME in the FILTERED list (only clips inserted now!)
+    // IMPORTANT: Use videoClipsAfterStart, NOT videoItemsByStartTime
+    // This prevents matching old clips that existed before our insertion
+    const videoEntry = videoClipsAfterStart.find(
+      (e) => Math.abs(e.startTime - clipInfo.expectedStartTime) < TOLERANCE
+    );
+
+    if (!videoEntry) {
+      console.warn(`[TRIM] Clip ${i}: NOT FOUND at expected time ${clipInfo.expectedStartTime.toFixed(2)}s (searched in ${videoClipsAfterStart.length} clips after ${startingTime.toFixed(2)}s)`);
+      continue;
+    }
+
+    // Find audio clip at the SAME start time in the FILTERED list
+    // Images don't have audio, so audioEntry will be null for them
+    const audioEntry = audioClipsAfterStart.find(
+      (a) => Math.abs(a.startTime - clipInfo.expectedStartTime) < TOLERANCE
+    ) || null;
+
+    // Debug logging for first 5 clips
+    if (i < 5) {
+      console.log(`[TRIM] Clip ${i}: expected@${clipInfo.expectedStartTime.toFixed(2)}s, found@${videoEntry.startTime.toFixed(2)}s, audio=${audioEntry ? 'YES' : 'NO'}`);
+    }
+
+    trimActions.push({
+      videoTrackItem: videoEntry.item,
+      audioTrackItem: audioEntry?.item || null,
+      startTime: videoEntry.startTime,
+      plannedDuration: clipInfo.plannedDuration,
+    });
+  }
+
+  console.log(`[TRIM] Prepared ${trimActions.length} trim actions`);
+
+  // Apply all trims in ONE transaction
+  if (trimActions.length === 0) {
+    console.log('[TRIM] No clips to trim');
+    return { success: true, trimmedCount: 0, errors: [] };
+  }
+
+  // PHASE 1: Get current endTime for each clip BEFORE the transaction
+  // Following Adobe's official sample: use getEndTime() then calculate new end
+  // See: https://github.com/AdobeDocs/uxp-premiere-pro-samples/blob/main/sample-panels/premiere-api/html/src/sequence.ts
+  console.log('[TRIM] Phase 1: Getting current endTimes (async)...');
+
+  const trimData: Array<{
+    videoTrackItem: TrackItem;
+    audioTrackItem: TrackItem | null;
+    currentStartSeconds: number;
+    currentEndSeconds: number;
+    currentDurationSeconds: number;
+    plannedDuration: number;
+  }> = [];
+
+  for (let i = 0; i < trimActions.length; i++) {
+    const action = trimActions[i];
+    try {
+      // IMPORTANT: Read BOTH startTime and endTime fresh to ensure consistency
+      // Using stale startTime values was causing incorrect duration calculations
+      const currentStart = await action.videoTrackItem.getStartTime();
+      const currentEnd = await action.videoTrackItem.getEndTime();
+      const currentDuration = currentEnd.seconds - currentStart.seconds;
+
+      trimData.push({
+        videoTrackItem: action.videoTrackItem,
+        audioTrackItem: action.audioTrackItem,
+        currentStartSeconds: currentStart.seconds,
+        currentEndSeconds: currentEnd.seconds,
+        currentDurationSeconds: currentDuration,
+        plannedDuration: action.plannedDuration,
+      });
+
+      if (i < 3) {
+        console.log(`[TRIM] Clip ${i}: start=${currentStart.seconds.toFixed(2)}s, end=${currentEnd.seconds.toFixed(2)}s, duration=${currentDuration.toFixed(1)}s, target=${action.plannedDuration.toFixed(1)}s`);
+      }
+    } catch (err) {
+      console.error(`[TRIM] Failed to get times for clip ${i}:`, err);
+    }
+  }
+
+  // PHASE 2: Apply trims using Adobe's approach (subtract from current end)
+  console.log('[TRIM] Phase 2: Applying trims (sync transaction)...');
+  let success = false;
+  let trimmedCount = 0;
+  const errors: string[] = [];
+
+  try {
+    project.lockedAccess(() => {
+      console.log('[TRIM] Inside lockedAccess - starting trim transaction');
+      try {
+        success = project.executeTransaction((compoundAction: any) => {
+          console.log(`[TRIM] Inside executeTransaction - adding ${trimData.length} trim actions`);
+
+          for (let i = 0; i < trimData.length; i++) {
+            const { videoTrackItem, audioTrackItem, currentStartSeconds, currentDurationSeconds, plannedDuration } = trimData[i];
+            try {
+              // Skip if clip is already shorter than planned duration
+              if (currentDurationSeconds <= plannedDuration) {
+                if (i < 3) {
+                  console.log(`[TRIM] Clip ${i}: SKIP - already ${currentDurationSeconds.toFixed(1)}s <= target ${plannedDuration.toFixed(1)}s`);
+                }
+                continue;
+              }
+
+              // SIMPLE APPROACH: newEnd = start + plannedDuration
+              // This is the most direct calculation
+              const newEndSeconds = currentStartSeconds + plannedDuration;
+
+              // Use createWithSeconds as Adobe does in their sample
+              const newEndTime = ppro.TickTime.createWithSeconds(newEndSeconds);
+
+              // VIDEO: Set END
+              const videoEndAction = videoTrackItem.createSetEndAction(newEndTime);
+              compoundAction.addAction(videoEndAction);
+
+              // AUDIO: Set END (if audio track item exists)
+              if (audioTrackItem) {
+                const audioEndAction = audioTrackItem.createSetEndAction(newEndTime);
+                compoundAction.addAction(audioEndAction);
+              }
+
+              trimmedCount++;
+
+              if (i < 3) {
+                console.log(`[TRIM] Clip ${i}: start=${currentStartSeconds.toFixed(2)}s + planned=${plannedDuration.toFixed(1)}s = newEnd=${newEndSeconds.toFixed(2)}s, hasAudio=${!!audioTrackItem}`);
+              }
+            } catch (actionError) {
+              console.error(`[TRIM] Failed to create trim action ${i}:`, actionError);
+              errors.push(`Failed to trim clip ${i}`);
+            }
+          }
+
+          console.log(`[TRIM] Added ${trimmedCount} trim actions to compound`);
+        }, 'Trim Clips to Planned Duration');
+
+        console.log('[TRIM] Transaction result:', success);
+      } catch (txError) {
+        console.error('[TRIM] Error in executeTransaction:', txError);
+        errors.push(txError instanceof Error ? txError.message : String(txError));
+      }
+    });
+  } catch (lockError) {
+    console.error('[TRIM] Error in lockedAccess:', lockError);
+    errors.push(lockError instanceof Error ? lockError.message : String(lockError));
+  }
+
+  const result: TrimResult = {
+    success: success && trimmedCount > 0,
+    trimmedCount: success ? trimmedCount : 0,
+    errors
+  };
+
+  console.log('[TRIM] Complete:', result);
+  return result;
+}
+
+/**
+ * Result of a ripple operation
+ */
+export interface RippleResult {
+  success: boolean;
+  movedCount: number;
+  errors: string[];
+}
+
+/**
+ * Ripples clips to remove gaps after trimming
+ * Moves each clip (except the first) to start immediately after the previous clip ends
+ * Also moves corresponding audio clips to keep them in sync
+ *
+ * @param sequence - The sequence containing the clips
+ * @param videoTrackIndex - Which video track to process
+ * @param audioTrackIndex - Which audio track to process (-1 for no audio, e.g. images)
+ * @param startingTime - The time where the first clip starts
+ */
+export async function rippleClipsToRemoveGaps(
+  sequence: Sequence,
+  videoTrackIndex: number,
+  audioTrackIndex: number,
+  startingTime: number
+): Promise<RippleResult> {
+  console.log('[RIPPLE] Starting ripple operation...');
+  console.log(`[RIPPLE] Starting time: ${startingTime}s, Video track: V${videoTrackIndex}, Audio track: A${audioTrackIndex}`);
+
+  const project = await getActiveProject();
+  if (!project) {
+    return { success: false, movedCount: 0, errors: ['No active project'] };
+  }
+
+  // Get the video track and all its items
+  const track = await getVideoTrack(sequence, videoTrackIndex);
+  const trackItems = await track.getTrackItems(
+    ppro.Constants.TrackItemType.CLIP,
+    false
+  );
+
+  console.log(`[RIPPLE] Found ${trackItems.length} track items on V${videoTrackIndex}`);
+
+  // Get audio track items (if audioTrackIndex >= 0)
+  let audioTrackItems: TrackItem[] = [];
+  if (audioTrackIndex >= 0) {
+    const audioTrack = await sequence.getAudioTrack(audioTrackIndex);
+    audioTrackItems = await audioTrack.getTrackItems(
+      ppro.Constants.TrackItemType.CLIP,
+      false
+    );
+    console.log(`[RIPPLE] Found ${audioTrackItems.length} audio track items on A${audioTrackIndex}`);
+  }
+
+  // Build array of VIDEO clips with their times
+  const clipsWithTimes: Array<{
+    item: TrackItem;
+    startTime: number;
+    endTime: number;
+  }> = [];
+
+  for (const item of trackItems) {
+    const startTime = await item.getStartTime();
+    const endTime = await item.getEndTime();
+    clipsWithTimes.push({
+      item,
+      startTime: startTime.seconds,
+      endTime: endTime.seconds
+    });
+  }
+
+  // Build array of AUDIO clips with their times (for matching)
+  const audioClipsWithTimes: Array<{
+    item: TrackItem;
+    startTime: number;
+  }> = [];
+
+  for (const item of audioTrackItems) {
+    const startTime = await item.getStartTime();
+    audioClipsWithTimes.push({
+      item,
+      startTime: startTime.seconds
+    });
+  }
+
+  // Sort by start time
+  clipsWithTimes.sort((a, b) => a.startTime - b.startTime);
+  audioClipsWithTimes.sort((a, b) => a.startTime - b.startTime);
+
+  // Filter to only clips at or after startingTime
+  const clipsToRipple = clipsWithTimes.filter(
+    (c) => c.startTime >= startingTime - 0.1
+  );
+
+  const audioClipsAfterStart = audioClipsWithTimes.filter(
+    (c) => c.startTime >= startingTime - 0.1
+  );
+
+  console.log(`[RIPPLE] Found ${clipsToRipple.length} video clips to ripple (after ${startingTime}s)`);
+  console.log(`[RIPPLE] Found ${audioClipsAfterStart.length} audio clips to ripple (after ${startingTime}s)`);
+
+  if (clipsToRipple.length <= 1) {
+    console.log('[RIPPLE] Only 0-1 clips, nothing to ripple');
+    return { success: true, movedCount: 0, errors: [] };
+  }
+
+  // Build list of move actions
+  // For each clip (starting from second), move it to end of previous clip
+  const TOLERANCE = 0.5; // Tolerance for matching audio to video
+  const moveActions: Array<{
+    videoItem: TrackItem;
+    audioItem: TrackItem | null;
+    newStartTime: number;
+    oldStartTime: number;
+  }> = [];
+  let expectedStart = clipsToRipple[0].endTime; // First clip stays, second starts at its end
+
+  for (let i = 1; i < clipsToRipple.length; i++) {
+    const clip = clipsToRipple[i];
+    const gap = clip.startTime - expectedStart;
+
+    if (Math.abs(gap) > 0.01) { // Only move if there's a significant gap
+      // Find matching audio clip at same start time
+      const audioClip = audioClipsAfterStart.find(
+        (a) => Math.abs(a.startTime - clip.startTime) < TOLERANCE
+      );
+
+      moveActions.push({
+        videoItem: clip.item,
+        audioItem: audioClip?.item || null,
+        newStartTime: expectedStart,
+        oldStartTime: clip.startTime
+      });
+
+      if (i < 5) {
+        console.log(`[RIPPLE] Will move clip ${i} from ${clip.startTime.toFixed(2)}s to ${expectedStart.toFixed(2)}s (gap: ${gap.toFixed(2)}s, audio: ${audioClip ? 'YES' : 'NO'})`);
+      }
+    }
+
+    // Calculate expected start for next clip based on this clip's duration
+    const clipDuration = clip.endTime - clip.startTime;
+    expectedStart = expectedStart + clipDuration;
+  }
+
+  console.log(`[RIPPLE] Prepared ${moveActions.length} move actions`);
+
+  if (moveActions.length === 0) {
+    console.log('[RIPPLE] No gaps to remove');
+    return { success: true, movedCount: 0, errors: [] };
+  }
+
+  // Execute all moves in ONE transaction
+  let success = false;
+  let movedCount = 0;
+  const errors: string[] = [];
+
+  try {
+    project.lockedAccess(() => {
+      console.log('[RIPPLE] Inside lockedAccess - starting ripple transaction');
+      try {
+        success = project.executeTransaction((compoundAction: any) => {
+          console.log(`[RIPPLE] Inside executeTransaction - adding ${moveActions.length} move actions`);
+
+          for (let i = 0; i < moveActions.length; i++) {
+            const { videoItem, audioItem, newStartTime } = moveActions[i];
+            try {
+              const newStart = createTickTime(newStartTime);
+
+              // Move VIDEO clip
+              const videoAction = videoItem.createSetStartAction(newStart);
+              compoundAction.addAction(videoAction);
+
+              // Move AUDIO clip (if exists)
+              if (audioItem) {
+                const audioAction = audioItem.createSetStartAction(newStart);
+                compoundAction.addAction(audioAction);
+              }
+
+              movedCount++;
+
+              if (i < 3) {
+                console.log(`[RIPPLE] Added move action ${i}: newStart=${newStartTime.toFixed(2)}s, audio=${!!audioItem}`);
+              }
+            } catch (actionError) {
+              console.error(`[RIPPLE] Failed to create move action ${i}:`, actionError);
+              errors.push(`Failed to move clip ${i}`);
+            }
+          }
+
+          console.log(`[RIPPLE] Added ${movedCount} move actions to compound`);
+        }, 'Ripple Clips to Remove Gaps');
+
+        console.log('[RIPPLE] Transaction result:', success);
+      } catch (txError) {
+        console.error('[RIPPLE] Error in executeTransaction:', txError);
+        errors.push(txError instanceof Error ? txError.message : String(txError));
+      }
+    });
+  } catch (lockError) {
+    console.error('[RIPPLE] Error in lockedAccess:', lockError);
+    errors.push(lockError instanceof Error ? lockError.message : String(lockError));
+  }
+
+  const result: RippleResult = {
+    success: success && movedCount > 0,
+    movedCount: success ? movedCount : 0,
+    errors
+  };
+
+  console.log('[RIPPLE] Complete:', result);
+  return result;
 }

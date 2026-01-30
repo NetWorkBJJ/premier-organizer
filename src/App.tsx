@@ -36,9 +36,16 @@ function App() {
 
   // Configuration state
   const [pattern, setPattern] = useState('V,I');
+  // Video duration config (6-8s)
   const [randomDurationEnabled, setRandomDurationEnabled] = useState(true);
   const [minDuration, setMinDuration] = useState(6);
   const [maxDuration, setMaxDuration] = useState(8);
+  // Image duration config (3-5s) - separate from videos
+  const [imageDurationEnabled, setImageDurationEnabled] = useState(true);
+  const [imageMinDuration, setImageMinDuration] = useState(3);
+  const [imageMaxDuration, setImageMaxDuration] = useState(5);
+  // Two-track mode: V1 for videos, V2 for images
+  const [useTwoTracks, setUseTwoTracks] = useState(true);
 
   // Preview state
   const [preview, setPreview] = useState<OrganizePreview | null>(null);
@@ -117,8 +124,16 @@ function App() {
           minSeconds: minDuration,
           maxSeconds: maxDuration,
         },
+        // Separate duration config for images
+        imageDuration: {
+          enabled: imageDurationEnabled,
+          minSeconds: imageMinDuration,
+          maxSeconds: imageMaxDuration,
+        },
         videoTrackIndex: 0,
         audioTrackIndex: 0,
+        // Two-track mode: images go to V2 (index 1)
+        imageTrackIndex: useTwoTracks ? 1 : undefined,
       };
 
       const previewResult = await createOrganizePreview(config);
@@ -140,6 +155,10 @@ function App() {
     randomDurationEnabled,
     minDuration,
     maxDuration,
+    imageDurationEnabled,
+    imageMinDuration,
+    imageMaxDuration,
+    useTwoTracks,
   ]);
 
   // Apply to timeline
@@ -162,6 +181,7 @@ function App() {
       const result = await applyToTimeline(preview, {
         videoTrackIndex: 0,
         audioTrackIndex: 0,
+        imageTrackIndex: useTwoTracks ? 1 : undefined,
       });
       console.log('[handleApply] applyToTimeline result:', result);
 
@@ -187,7 +207,7 @@ function App() {
         err instanceof Error ? err.message : 'Erro ao aplicar na timeline'
       );
     }
-  }, [preview]);
+  }, [preview, useTwoTracks]);
 
   // Refresh bins
   const handleRefresh = useCallback(async () => {
@@ -279,15 +299,47 @@ function App() {
         {/* Duration Configuration */}
         <section className="app__section">
           <h2>3. Duração</h2>
-          <DurationConfig
-            enabled={randomDurationEnabled}
-            minSeconds={minDuration}
-            maxSeconds={maxDuration}
-            onEnabledChange={setRandomDurationEnabled}
-            onMinChange={setMinDuration}
-            onMaxChange={setMaxDuration}
-            disabled={isDisabled}
-          />
+
+          {/* Two-track mode toggle */}
+          <div className="app__option">
+            <label className="app__checkbox">
+              <input
+                type="checkbox"
+                checked={useTwoTracks}
+                onChange={(e) => setUseTwoTracks(e.target.checked)}
+                disabled={isDisabled}
+              />
+              <span>Usar duas tracks (V1=Vídeos, V2=Imagens)</span>
+            </label>
+          </div>
+
+          {/* Video duration */}
+          <div className="app__subsection">
+            <h3>Vídeos (V1)</h3>
+            <DurationConfig
+              enabled={randomDurationEnabled}
+              minSeconds={minDuration}
+              maxSeconds={maxDuration}
+              onEnabledChange={setRandomDurationEnabled}
+              onMinChange={setMinDuration}
+              onMaxChange={setMaxDuration}
+              disabled={isDisabled}
+            />
+          </div>
+
+          {/* Image duration */}
+          <div className="app__subsection">
+            <h3>Imagens (V2)</h3>
+            <DurationConfig
+              enabled={imageDurationEnabled}
+              minSeconds={imageMinDuration}
+              maxSeconds={imageMaxDuration}
+              onEnabledChange={setImageDurationEnabled}
+              onMinChange={setImageMinDuration}
+              onMaxChange={setImageMaxDuration}
+              disabled={isDisabled}
+            />
+          </div>
         </section>
 
         {/* Preview */}
