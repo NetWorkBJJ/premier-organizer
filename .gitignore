@@ -2,7 +2,7 @@
 node_modules/
 
 # Build output
-build/
+# build/ - Included for "download and use" experience
 dist/
 
 # IDE
