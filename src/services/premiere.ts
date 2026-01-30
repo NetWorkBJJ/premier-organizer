@@ -420,14 +420,14 @@ export async function insertClipsBatched(
                 });
               }
 
-              // Pass ProjectItem directly - NO cast to ClipProjectItem
-              // This matches Adobe official sample code
-              const action = seqEditor.createInsertProjectItemAction(
+              // Use OVERWRITE action to ensure clips are placed EXACTLY at specified time
+              // This prevents Premiere from pushing clips to different positions
+              // which was causing the trim matching to fail
+              const action = seqEditor.createOverwriteItemAction(
                 prepared.projectItem,
                 insertTime,
                 prepared.config.videoTrackIndex,
-                prepared.config.audioTrackIndex,
-                true  // limitShift: true per Adobe sample
+                prepared.config.audioTrackIndex
               );
               compoundAction.addAction(action);
               actionsAdded++;
@@ -751,8 +751,8 @@ export async function trimClipsAfterInsert(
   console.log(`[TRIM] Found ${audioClipsAfterStart.length} audio clips after starting time ${startingTime}s`);
 
   // Build list of trim actions to apply
-  // Match clips by EXPECTED START TIME (not by index!)
-  // This ensures correct clip gets correct plannedDuration in two-track mode
+  // PRIMARY: Match clips by EXPECTED START TIME
+  // FALLBACK: If time matching fails, use ORDER-BASED matching
   const trimActions: Array<{
     videoTrackItem: TrackItem;
     audioTrackItem: TrackItem | null;
@@ -762,43 +762,90 @@ export async function trimClipsAfterInsert(
 
   const TOLERANCE = 0.5; // 0.5 second tolerance for floating point comparison
 
-  for (let i = 0; i < clips.length; i++) {
-    const clipInfo = clips[i];
+  // Filter clips that need trimming (have plannedDuration)
+  const clipsToTrim = clips.filter(c => c.plannedDuration !== null);
+  console.log(`[TRIM] Clips that need trimming: ${clipsToTrim.length}`);
 
-    // Skip if no planned duration (random duration disabled for this clip)
-    if (clipInfo.plannedDuration === null) {
-      continue;
-    }
+  // Try time-based matching first
+  let timeMatchCount = 0;
+  const usedVideoIndices = new Set<number>();
 
-    // Find video clip by EXPECTED START TIME in the FILTERED list (only clips inserted now!)
-    // IMPORTANT: Use videoClipsAfterStart, NOT videoItemsByStartTime
-    // This prevents matching old clips that existed before our insertion
-    const videoEntry = videoClipsAfterStart.find(
+  for (let i = 0; i < clipsToTrim.length; i++) {
+    const clipInfo = clipsToTrim[i];
+
+    // Find video clip by EXPECTED START TIME
+    const videoEntryIndex = videoClipsAfterStart.findIndex(
       (e) => Math.abs(e.startTime - clipInfo.expectedStartTime) < TOLERANCE
     );
 
-    if (!videoEntry) {
-      console.warn(`[TRIM] Clip ${i}: NOT FOUND at expected time ${clipInfo.expectedStartTime.toFixed(2)}s (searched in ${videoClipsAfterStart.length} clips after ${startingTime.toFixed(2)}s)`);
-      continue;
+    if (videoEntryIndex !== -1) {
+      timeMatchCount++;
+      usedVideoIndices.add(videoEntryIndex);
     }
+  }
 
-    // Find audio clip at the SAME start time in the FILTERED list
-    // Images don't have audio, so audioEntry will be null for them
-    const audioEntry = audioClipsAfterStart.find(
-      (a) => Math.abs(a.startTime - clipInfo.expectedStartTime) < TOLERANCE
-    ) || null;
+  console.log(`[TRIM] Time-based matching: ${timeMatchCount}/${clipsToTrim.length} clips matched`);
 
-    // Debug logging for first 5 clips
-    if (i < 5) {
-      console.log(`[TRIM] Clip ${i}: expected@${clipInfo.expectedStartTime.toFixed(2)}s, found@${videoEntry.startTime.toFixed(2)}s, audio=${audioEntry ? 'YES' : 'NO'}`);
+  // Decide matching strategy
+  const useOrderMatching = timeMatchCount < clipsToTrim.length * 0.5; // If less than 50% matched by time
+
+  if (useOrderMatching) {
+    console.log(`[TRIM] Using ORDER-BASED matching (time matching failed for most clips)`);
+
+    // Match by ORDER: first trimInfo → first clip on timeline, etc.
+    const numToMatch = Math.min(clipsToTrim.length, videoClipsAfterStart.length);
+
+    for (let i = 0; i < numToMatch; i++) {
+      const clipInfo = clipsToTrim[i];
+      const videoEntry = videoClipsAfterStart[i];
+
+      // Find corresponding audio clip at same start time
+      const audioEntry = audioClipsAfterStart.find(
+        (a) => Math.abs(a.startTime - videoEntry.startTime) < TOLERANCE
+      ) || null;
+
+      if (i < 5) {
+        console.log(`[TRIM] Clip ${i} (ORDER): timeline@${videoEntry.startTime.toFixed(2)}s, planned=${clipInfo.plannedDuration!.toFixed(1)}s, audio=${audioEntry ? 'YES' : 'NO'}`);
+      }
+
+      trimActions.push({
+        videoTrackItem: videoEntry.item,
+        audioTrackItem: audioEntry?.item || null,
+        startTime: videoEntry.startTime,
+        plannedDuration: clipInfo.plannedDuration!,
+      });
     }
+  } else {
+    console.log(`[TRIM] Using TIME-BASED matching`);
 
-    trimActions.push({
-      videoTrackItem: videoEntry.item,
-      audioTrackItem: audioEntry?.item || null,
-      startTime: videoEntry.startTime,
-      plannedDuration: clipInfo.plannedDuration,
-    });
+    // Match by EXPECTED START TIME
+    for (let i = 0; i < clipsToTrim.length; i++) {
+      const clipInfo = clipsToTrim[i];
+
+      const videoEntry = videoClipsAfterStart.find(
+        (e) => Math.abs(e.startTime - clipInfo.expectedStartTime) < TOLERANCE
+      );
+
+      if (!videoEntry) {
+        console.warn(`[TRIM] Clip ${i}: NOT FOUND at expected time ${clipInfo.expectedStartTime.toFixed(2)}s`);
+        continue;
+      }
+
+      const audioEntry = audioClipsAfterStart.find(
+        (a) => Math.abs(a.startTime - clipInfo.expectedStartTime) < TOLERANCE
+      ) || null;
+
+      if (i < 5) {
+        console.log(`[TRIM] Clip ${i} (TIME): expected@${clipInfo.expectedStartTime.toFixed(2)}s, found@${videoEntry.startTime.toFixed(2)}s, audio=${audioEntry ? 'YES' : 'NO'}`);
+      }
+
+      trimActions.push({
+        videoTrackItem: videoEntry.item,
+        audioTrackItem: audioEntry?.item || null,
+        startTime: videoEntry.startTime,
+        plannedDuration: clipInfo.plannedDuration!,
+      });
+    }
   }
 
   console.log(`[TRIM] Prepared ${trimActions.length} trim actions`);
