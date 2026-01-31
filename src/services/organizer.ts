@@ -133,7 +133,14 @@ export async function createOrganizePreview(
   ];
 
   // Sort ALL clips by take number (GLOBAL ordering)
-  allClips.sort((a, b) => a.takeNumber - b.takeNumber);
+  // When same take number, video (V) comes before image (I)
+  allClips.sort((a, b) => {
+    if (a.takeNumber !== b.takeNumber) {
+      return a.takeNumber - b.takeNumber;
+    }
+    // Desempate: V vem antes de I no mesmo take
+    return a.type === 'V' ? -1 : 1;
+  });
 
   console.log('[createOrganizePreview] All clips sorted globally:', allClips.length);
   console.log('[createOrganizePreview] First 10 clips in global order:');

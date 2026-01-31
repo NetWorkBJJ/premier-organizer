@@ -36320,11 +36320,11 @@ __webpack_require__.r(__webpack_exports__);
 
 /**
  * Extracts a short description from the full filename
- * "(TAKE 426) VIDEO Subject- Penny Brooks..." → "Penny Brooks..."
+ * "TAKE 426 VIDEO Subject- Penny Brooks..." → "Penny Brooks..."
  */
 function extractDescription(name) {
-    // Remove "(TAKE N)" prefix
-    let desc = name.replace(/^\(TAKE\s*\d+\)\s*/i, '');
+    // Remove "TAKE N" prefix
+    let desc = name.replace(/^TAKE\s*\d+\s*/i, '');
     // Remove "VIDEO " or "IMAGE " prefix
     desc = desc.replace(/^(VIDEO|IMAGE)\s*/i, '');
     // Remove "Subject-" or "Subject:" prefix
@@ -36461,7 +36461,14 @@ async function createOrganizePreview(config) {
         })),
     ];
     // Sort ALL clips by take number (GLOBAL ordering)
-    allClips.sort((a, b) => a.takeNumber - b.takeNumber);
+    // When same take number, video (V) comes before image (I)
+    allClips.sort((a, b) => {
+        if (a.takeNumber !== b.takeNumber) {
+            return a.takeNumber - b.takeNumber;
+        }
+        // Desempate: V vem antes de I no mesmo take
+        return a.type === 'V' ? -1 : 1;
+    });
     console.log('[createOrganizePreview] All clips sorted globally:', allClips.length);
     console.log('[createOrganizePreview] First 10 clips in global order:');
     allClips.slice(0, 10).forEach((item, i) => {
@@ -37620,13 +37627,13 @@ __webpack_require__.r(__webpack_exports__);
  * Parses file names with "(TAKE N) Prompt..." convention
  */
 /**
- * Regular expression to match "(TAKE N)" pattern
+ * Regular expression to match "TAKE N" pattern
  * Examples:
- * - "(TAKE 1) sunset.mp4" → 1
- * - "(TAKE 23) city lights.mp4" → 23
- * - "(take 5) beach.jpg" → 5 (case insensitive)
+ * - "TAKE 1 sunset.mp4" → 1
+ * - "TAKE 23 city lights.mp4" → 23
+ * - "take 5 beach.jpg" → 5 (case insensitive)
  */
-const TAKE_REGEX = /\(TAKE\s*(\d+)\)/i;
+const TAKE_REGEX = /TAKE\s*(\d+)/i;
 /**
  * Extracts the take number from a filename
  * @param filename - The filename to parse

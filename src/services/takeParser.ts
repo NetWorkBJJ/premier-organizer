@@ -6,13 +6,13 @@
 import type { ProjectItem } from 'premierepro';
 
 /**
- * Regular expression to match "(TAKE N)" pattern
+ * Regular expression to match "TAKE N" pattern
  * Examples:
- * - "(TAKE 1) sunset.mp4" → 1
- * - "(TAKE 23) city lights.mp4" → 23
- * - "(take 5) beach.jpg" → 5 (case insensitive)
+ * - "TAKE 1 sunset.mp4" → 1
+ * - "TAKE 23 city lights.mp4" → 23
+ * - "take 5 beach.jpg" → 5 (case insensitive)
  */
-const TAKE_REGEX = /\(TAKE\s*(\d+)\)/i;
+const TAKE_REGEX = /TAKE\s*(\d+)/i;
 
 export interface ParsedTake {
   takeNumber: number;

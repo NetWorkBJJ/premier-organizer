@@ -14,11 +14,11 @@ interface PreviewProps {
 
 /**
  * Extracts a short description from the full filename
- * "(TAKE 426) VIDEO Subject- Penny Brooks..." → "Penny Brooks..."
+ * "TAKE 426 VIDEO Subject- Penny Brooks..." → "Penny Brooks..."
  */
 function extractDescription(name: string): string {
-  // Remove "(TAKE N)" prefix
-  let desc = name.replace(/^\(TAKE\s*\d+\)\s*/i, '');
+  // Remove "TAKE N" prefix
+  let desc = name.replace(/^TAKE\s*\d+\s*/i, '');
   // Remove "VIDEO " or "IMAGE " prefix
   desc = desc.replace(/^(VIDEO|IMAGE)\s*/i, '');
   // Remove "Subject-" or "Subject:" prefix
